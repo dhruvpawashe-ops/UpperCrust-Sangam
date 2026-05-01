@@ -9,10 +9,10 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const { createClient } = require('@supabase/supabase-js');
-
+ 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
-
+ 
 // ── ENV ──
 const {
   SUPABASE_URL,
@@ -21,18 +21,18 @@ const {
   PORT = 3000,
   ALLOWED_ORIGIN = '*',
 } = process.env;
-
+ 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set');
   process.exit(1);
 }
-
+ 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-
+ 
 // ── MIDDLEWARE ──
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json({ limit: '10mb' }));
-
+ 
 // ── AUTH MIDDLEWARE ──
 function auth(req, res, next) {
   const h = req.headers.authorization;
@@ -44,46 +44,46 @@ function auth(req, res, next) {
     res.status(401).json({ error: 'Invalid token' });
   }
 }
-
+ 
 function adminOnly(req, res, next) {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
   next();
 }
-
+ 
 // ════════════════════════════════════════════════
 // AUTH ROUTES
 // ════════════════════════════════════════════════
-
+ 
 // POST /api/login
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
-
+ 
   const { data: user, error } = await supabase
     .from('users')
     .select('*')
     .eq('username', username.toLowerCase().trim())
     .single();
-
+ 
   if (error || !user) return res.status(401).json({ error: 'Invalid credentials' });
-
+ 
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-
+ 
   const token = jwt.sign(
     { id: user.id, username: user.username, name: user.name, role: user.role, rm_key: user.rm_key },
     JWT_SECRET,
     { expiresIn: '12h' }
   );
-
+ 
   res.json({ token, user: { id: user.id, username: user.username, name: user.name, role: user.role, rm_key: user.rm_key } });
 });
-
+ 
 // POST /api/seed-users — run once to create default users
 app.post('/api/seed-users', async (req, res) => {
   const { admin_secret } = req.body;
   if (admin_secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Forbidden' });
-
+ 
   const USERS = [
     { username: 'admin',     password: 'admin123',   name: 'Admin',              role: 'admin', rm_key: null },
     { username: 'manoj',     password: 'manoj123',   name: 'Manoj Rohit',        role: 'rm',    rm_key: 'UpperCrust Wealth  Manoj Rohit' },
@@ -98,7 +98,7 @@ app.post('/api/seed-users', async (req, res) => {
     { username: 'harshilpr', password: 'harshilpr2', name: 'Harshil Prajapati',  role: 'rm',    rm_key: 'UpperCrust Wealth Harshil Prajapati' },
     { username: 'krunal',    password: 'krunal123',  name: 'Krunal Patel',       role: 'rm',    rm_key: 'Krunalkumar Patel' },
   ];
-
+ 
   const results = [];
   for (const u of USERS) {
     const password_hash = await bcrypt.hash(u.password, 10);
@@ -110,63 +110,63 @@ app.post('/api/seed-users', async (req, res) => {
   }
   res.json({ results });
 });
-
+ 
 // ════════════════════════════════════════════════
 // CLIENT ROUTES
 // ════════════════════════════════════════════════
-
+ 
 // GET /api/clients — paginated, filtered
 app.get('/api/clients', auth, async (req, res) => {
   const { page = 1, limit = 50, sort = 'aum', xirr_filter, aum_filter, search } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
-
+ 
   let q = supabase.from('clients').select('*', { count: 'exact' });
-
+ 
   // RM filter
   if (req.user.role !== 'admin') q = q.eq('rm_key', req.user.rm_key);
-
+ 
   // Search
   if (search) q = q.or(`name.ilike.%${search}%,pan.ilike.%${search}%,mobile.ilike.%${search}%`);
-
+ 
   // XIRR filter
   if (xirr_filter === 'hi') q = q.gte('xirr', 10);
   else if (xirr_filter === 'md') q = q.gte('xirr', 5).lt('xirr', 10);
   else if (xirr_filter === 'lo') q = q.gte('xirr', 0).lt('xirr', 5);
   else if (xirr_filter === 'ng') q = q.lt('xirr', 0);
-
+ 
   // AUM filter
   if (aum_filter === 'cr') q = q.gte('aum', 10000000);
   else if (aum_filter === '50l') q = q.gte('aum', 5000000).lt('aum', 10000000);
   else if (aum_filter === '10l') q = q.gte('aum', 1000000).lt('aum', 5000000);
   else if (aum_filter === 'sm') q = q.lt('aum', 1000000);
-
+ 
   // Sort
   const sortMap = { aum: 'aum', name: 'name', xirr: 'xirr', sip: 'sip_amount', sales: 'net_sales_fy' };
   const col = sortMap[sort] || 'aum';
   q = q.order(col, { ascending: sort === 'name' }).range(offset, offset + parseInt(limit) - 1);
-
+ 
   const { data, count, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json({ data, total: count, page: parseInt(page), limit: parseInt(limit) });
 });
-
+ 
 // GET /api/clients/:id — single client with reviews, tasks
 app.get('/api/clients/:id', auth, async (req, res) => {
   let q = supabase.from('clients').select('*').eq('id', req.params.id);
   if (req.user.role !== 'admin') q = q.eq('rm_key', req.user.rm_key);
   const { data: client, error } = await q.single();
   if (error) return res.status(404).json({ error: 'Not found' });
-
+ 
   const [{ data: reviews }, { data: tasks }, { data: meets }, { data: folios }] = await Promise.all([
     supabase.from('reviews').select('*').eq('client_id', req.params.id).order('review_date', { ascending: false }),
     supabase.from('tasks').select('*').eq('client_id', req.params.id).order('due_date'),
     supabase.from('meetings').select('*').eq('client_id', req.params.id).order('meeting_date', { ascending: false }),
     supabase.from('folios').select('*').eq('client_id', req.params.id).order('current_value', { ascending: false }),
   ]);
-
+ 
   res.json({ client, reviews: reviews || [], tasks: tasks || [], meetings: meets || [], folios: folios || [] });
 });
-
+ 
 // GET /api/clients/search/:q — quick search (for datalist)
 app.get('/api/clients/search/:q', auth, async (req, res) => {
   let q = supabase.from('clients')
@@ -177,24 +177,24 @@ app.get('/api/clients/search/:q', auth, async (req, res) => {
   const { data } = await q;
   res.json(data || []);
 });
-
+ 
 // ════════════════════════════════════════════════
 // IMPORT ROUTES
 // ════════════════════════════════════════════════
-
+ 
 // POST /api/import/investors — upload investorlist.xlsx
 app.post('/api/import/investors', auth, adminOnly, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-
+ 
   const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const df = XLSX.utils.sheet_to_json(ws);
-
+ 
   function sf(v) {
     if (!v && v !== 0) return 0;
     return parseFloat(String(v).replace(/,/g, '').trim()) || 0;
   }
-
+ 
   const rows = df.map(row => ({
     name: (row['Investor'] || '').toString().trim(),
     rm_key: (row['Partner/Employee'] || '').toString().trim(),
@@ -250,7 +250,7 @@ app.post('/api/import/investors', auth, adminOnly, upload.single('file'), async 
     open_meetings: Math.round(sf(row['Open Meetings'])),
     imported_at: new Date().toISOString(),
   })).filter(r => r.name);
-
+ 
   // Upsert in batches of 200
   let inserted = 0;
   for (let i = 0; i < rows.length; i += 200) {
@@ -259,17 +259,17 @@ app.post('/api/import/investors', auth, adminOnly, upload.single('file'), async 
     if (error) console.error('Batch error:', error.message);
     else inserted += batch.length;
   }
-
+ 
   res.json({ ok: true, total: df.length, inserted });
 });
-
+ 
 // POST /api/import/portfolio — upload folio report xlsx
 app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-
+ 
   const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
   const ws = wb.Sheets[wb.SheetNames[0]];
-
+ 
   // Detect header row
   const rawData = XLSX.utils.sheet_to_json(ws, { header: 1 });
   let hr = 0;
@@ -277,9 +277,9 @@ app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async 
     if (rawData[i].some(c => String(c).includes('Partner') || String(c).includes('Investor'))) { hr = i; break; }
   }
   const df = XLSX.utils.sheet_to_json(ws, { range: hr });
-
+ 
   function cn(v) { if (!v) return 0; return parseFloat(String(v).replace(/'/g, '').replace(/,/g, '').trim()) || 0; }
-
+ 
   const rows = df.map(row => ({
     client_name: (row['Investor'] || '').toString().trim(),
     amc: (row['AMC'] || '').toString().trim(),
@@ -290,34 +290,34 @@ app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async 
     current_value: cn(row['Current Value']),
     imported_at: new Date().toISOString(),
   })).filter(r => r.client_name && r.amc);
-
+ 
   // Try to link to client IDs
   const { data: clients } = await supabase.from('clients').select('id, name');
   const clientMap = {};
   (clients || []).forEach(c => { clientMap[c.name.toLowerCase().trim()] = c.id; });
-
+ 
   const enriched = rows.map(r => ({
     ...r,
     client_id: clientMap[r.client_name.toLowerCase().trim()] || null,
   }));
-
+ 
   // Delete old and insert fresh
   await supabase.from('folios').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-
+ 
   let inserted = 0;
   for (let i = 0; i < enriched.length; i += 500) {
     const batch = enriched.slice(i, i + 500);
     const { error } = await supabase.from('folios').insert(batch);
     if (!error) inserted += batch.length;
   }
-
+ 
   res.json({ ok: true, total: df.length, inserted });
 });
-
+ 
 // ════════════════════════════════════════════════
 // TASKS ROUTES
 // ════════════════════════════════════════════════
-
+ 
 app.get('/api/tasks', auth, async (req, res) => {
   let q = supabase.from('tasks').select('*').eq('rm_key', req.user.rm_key).order('due_date');
   if (req.user.role === 'admin' && req.query.all === 'true') {
@@ -327,7 +327,7 @@ app.get('/api/tasks', auth, async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.post('/api/tasks', auth, async (req, res) => {
   const { client_name, client_id, task_type, priority, due_date, notes } = req.body;
   const { data, error } = await supabase.from('tasks').insert({
@@ -336,28 +336,28 @@ app.post('/api/tasks', auth, async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.patch('/api/tasks/:id', auth, async (req, res) => {
   const { data, error } = await supabase.from('tasks').update(req.body).eq('id', req.params.id).eq('rm_key', req.user.rm_key).select().single();
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.delete('/api/tasks/:id', auth, async (req, res) => {
   await supabase.from('tasks').delete().eq('id', req.params.id).eq('rm_key', req.user.rm_key);
   res.json({ ok: true });
 });
-
+ 
 // ════════════════════════════════════════════════
 // MEETINGS ROUTES
 // ════════════════════════════════════════════════
-
+ 
 app.get('/api/meetings', auth, async (req, res) => {
   const { data, error } = await supabase.from('meetings').select('*').eq('rm_key', req.user.rm_key).order('meeting_date', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.post('/api/meetings', auth, async (req, res) => {
   const { client_name, client_id, meeting_date, notes, products_discussed, investment_intent, followup_date, status } = req.body;
   const { data, error } = await supabase.from('meetings').insert({
@@ -366,18 +366,18 @@ app.post('/api/meetings', auth, async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 // ════════════════════════════════════════════════
 // LEADS ROUTES
 // ════════════════════════════════════════════════
-
+ 
 app.get('/api/leads', auth, async (req, res) => {
   let q = supabase.from('leads').select('*').eq('rm_key', req.user.rm_key).order('created_at', { ascending: false });
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.post('/api/leads', auth, async (req, res) => {
   const { name, phone, email, source, intent, products, priority, followup_date, notes } = req.body;
   const { data, error } = await supabase.from('leads').insert({
@@ -386,29 +386,29 @@ app.post('/api/leads', auth, async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.patch('/api/leads/:id', auth, async (req, res) => {
   const { data, error } = await supabase.from('leads').update(req.body).eq('id', req.params.id).eq('rm_key', req.user.rm_key).select().single();
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 app.delete('/api/leads/:id', auth, async (req, res) => {
   await supabase.from('leads').delete().eq('id', req.params.id).eq('rm_key', req.user.rm_key);
   res.json({ ok: true });
 });
-
+ 
 // ════════════════════════════════════════════════
 // REVIEWS ROUTES
 // ════════════════════════════════════════════════
-
+ 
 app.get('/api/reviews', auth, async (req, res) => {
   // Returns map of client_id -> latest review
   let q = supabase.from('reviews').select('*').order('review_date', { ascending: false });
   if (req.user.role !== 'admin') q = q.eq('rm_key', req.user.rm_key);
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
-
+ 
   // Deduplicate to latest per client
   const latest = {};
   (data || []).forEach(r => {
@@ -418,7 +418,7 @@ app.get('/api/reviews', auth, async (req, res) => {
   });
   res.json(latest);
 });
-
+ 
 app.post('/api/reviews', auth, async (req, res) => {
   const { client_id, review_date, xirr_at_review, aum_at_review, products_discussed, notes, next_review_date, sip_reviewed, goal_reviewed, risk_reviewed, nomination_done } = req.body;
   const { data, error } = await supabase.from('reviews').insert({
@@ -427,16 +427,16 @@ app.post('/api/reviews', auth, async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 });
-
+ 
 // ════════════════════════════════════════════════
 // ANALYTICS / DASHBOARD ROUTES
 // ════════════════════════════════════════════════
-
+ 
 app.get('/api/dashboard', auth, async (req, res) => {
   let q = supabase.from('clients').select('aum, aum_equity, aum_debt, aum_gold, aum_cash, aum_pms, xirr, sip_amount, sip_count, net_sales_fy, gross_sales_fy, redemptions_fy, name, rm_key');
   if (req.user.role !== 'admin') q = q.eq('rm_key', req.user.rm_key);
   const { data: clients } = await q;
-
+ 
   const s = (arr, k) => arr.reduce((a, x) => a + (x[k] || 0), 0);
   res.json({
     total_clients: clients.length,
@@ -469,7 +469,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
     })(),
   });
 });
-
+ 
 // GET /api/portfolio/summary — AMC/scheme aggregates from folios
 app.get('/api/portfolio/summary', auth, async (req, res) => {
   let q = supabase.from('folios').select('amc, scheme, current_value, units, client_name, client_id');
@@ -480,11 +480,11 @@ app.get('/api/portfolio/summary', auth, async (req, res) => {
     q = q.in('client_id', ids);
   }
   const { data: folios } = await q;
-
+ 
   const amcAgg = {}, schAgg = {};
   const clients = new Set();
   let tv = 0;
-
+ 
   (folios || []).forEach(f => {
     tv += f.current_value || 0;
     clients.add(f.client_name);
@@ -498,7 +498,7 @@ app.get('/api/portfolio/summary', auth, async (req, res) => {
     schAgg[f.scheme].folios++;
     schAgg[f.scheme].clients.add(f.client_name);
   });
-
+ 
   res.json({
     total_value: tv,
     total_folios: folios.length,
@@ -512,7 +512,7 @@ app.get('/api/portfolio/summary', auth, async (req, res) => {
       .slice(0, 50),
   });
 });
-
+ 
 // GET /api/admin/rm-summary — admin only
 app.get('/api/admin/rm-summary', auth, adminOnly, async (req, res) => {
   const { data: clients } = await supabase.from('clients').select('rm_key, aum, net_sales_fy, sip_amount, xirr, redemptions_fy');
@@ -529,8 +529,8 @@ app.get('/api/admin/rm-summary', auth, adminOnly, async (req, res) => {
   });
   res.json(rmS);
 });
-
+ 
 // ── HEALTH ──
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
-
+ 
 app.listen(PORT, () => console.log(`Uppercrust CRM backend running on port ${PORT}`));
