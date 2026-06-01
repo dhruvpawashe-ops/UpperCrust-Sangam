@@ -2,6 +2,7 @@
 // UPPERCRUST ONE CRM v2 — Railway Backend COMPLETE
 // server.js — Full rebuild with proper RM isolation + Admin
 // ══════════════════════════════════════════════════════════
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -24,6 +25,10 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) { console.error('ERROR: Set SUPABASE
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json({ limit: '10mb' }));
+
+// ── SERVE FRONTEND ──
+app.use(express.static(path.join(__dirname)));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // ── AUTH MIDDLEWARE ──
 function auth(req, res, next) {
@@ -90,7 +95,6 @@ app.get('/api/clients', auth, async (req, res) => {
   const { page = 1, limit = 2000, sort = 'aum' } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
   let q = supabase.from('clients').select('*', { count: 'exact' });
-  // STRICT RM isolation — RM sees ONLY their clients
   if (req.user.role !== 'admin') {
     if (!req.user.rm_key) return res.json({ data: [], total: 0, page: 1, limit: parseInt(limit) });
     q = q.eq('rm_key', req.user.rm_key);
@@ -213,7 +217,6 @@ app.post('/api/import/investors', auth, adminOnly, upload.single('file'), async 
     imported_at: new Date().toISOString(),
   })).filter(r => r.name && r.rm_key);
 
-  // Clear old and insert fresh
   const { error: delErr } = await supabase.from('clients').delete().neq('id', '00000000-0000-0000-0000-000000000000');
   if (delErr) console.error('Delete error:', delErr.message);
 
@@ -237,9 +240,7 @@ app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async 
 
   if (content.includes('<') || content.includes('html') || content.includes('table')) {
     const htmlContent = req.file.buffer.toString('utf8');
-    // Parse HTML table - find all TR elements
     const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-    const tdRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
     let trMatch;
     let headerRow = null;
     while ((trMatch = trRegex.exec(htmlContent)) !== null) {
@@ -288,7 +289,6 @@ app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async 
     imported_at: new Date().toISOString(),
   })).filter(r => r.client_name && r.amc);
 
-  // Get all clients for ID mapping (paginated)
   let allClients = []; let cfrom = 0;
   while (true) {
     const { data: cd } = await supabase.from('clients').select('id, name').range(cfrom, cfrom + 999);
@@ -314,7 +314,7 @@ app.post('/api/import/portfolio', auth, adminOnly, upload.single('file'), async 
 // TASKS — RM ISOLATED
 // ════════════════════════════════════════════════
 app.get('/api/tasks', auth, async (req, res) => {
-  const { rm_key } = req.query; // admin can filter by rm_key
+  const { rm_key } = req.query;
   let q = supabase.from('tasks').select('*').order('due_date');
   if (req.user.role !== 'admin') q = q.eq('rm_key', req.user.rm_key);
   else if (rm_key) q = q.eq('rm_key', rm_key);
@@ -442,7 +442,6 @@ app.post('/api/reviews', auth, async (req, res) => {
 // ════════════════════════════════════════════════
 app.get('/api/portfolio/summary', auth, async (req, res) => {
   const { rm_key } = req.query;
-  // Paginate folios - can be 15000+ rows
   let folios = []; let ffrom = 0;
   while (true) {
     let q = supabase.from('folios').select('amc,scheme,current_value,units,client_name,client_id,rm_key,folio_status').range(ffrom, ffrom + 999);
@@ -475,12 +474,8 @@ app.get('/api/portfolio/summary', auth, async (req, res) => {
 // ════════════════════════════════════════════════
 // ADMIN — COMPREHENSIVE RM ANALYTICS
 // ════════════════════════════════════════════════
-
-// Full RM summary from client data
 app.get('/api/admin/rm-summary', auth, adminOnly, async (req, res) => {
-  // Paginate to get ALL clients past Supabase 1000 row limit
-  let clients = [];
-  let from = 0;
+  let clients = []; let from = 0;
   while (true) {
     const { data, error } = await supabase.from('clients').select(
       'rm_key,aum,aum_total,aum_equity,aum_debt,aum_pms,aum_gold,net_sales_fy,net_sales_cy,gross_sales_fy,gross_sales_cy,redemptions_fy,redemptions_cy,sip_amount,sip_count,sip_net_fy,sip_gross_fy,sip_closed_cy,sip_change_2y,sip_gap,lumpsum_gap,xirr,nfo_fy,fd_sales,pms_sales,tax_sales_fy,investment_mapping_done,family_needs,direct_equity_aum'
@@ -520,45 +515,37 @@ app.get('/api/admin/rm-summary', auth, adminOnly, async (req, res) => {
     const a = c.aum_total || c.aum || 0;
     if (a >= 1e7) r.hni++; else if (a >= 5e6) r.affluent++; else if (a >= 1e6) r.mid++; else r.retail++;
   });
-  // Add avg xirr
   Object.keys(rmS).forEach(k => { rmS[k].avg_xirr = rmS[k].cl ? rmS[k].xirr / rmS[k].cl : 0; });
   res.json(rmS);
 });
 
-// All reviews with client names — for admin tracking
 app.get('/api/admin/all-reviews', auth, adminOnly, async (req, res) => {
   const { data, error } = await supabase.from('reviews').select('*').order('created_at', { ascending: false }).limit(1000);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// All tasks — for admin to see what each RM is doing
 app.get('/api/admin/all-tasks', auth, adminOnly, async (req, res) => {
   const { data, error } = await supabase.from('tasks').select('*').order('updated_at', { ascending: false }).limit(1000);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// All meetings
 app.get('/api/admin/all-meetings', auth, adminOnly, async (req, res) => {
   const { data, error } = await supabase.from('meetings').select('*').order('created_at', { ascending: false }).limit(1000);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// All leads — for admin to see RM pipeline
 app.get('/api/admin/all-leads', auth, adminOnly, async (req, res) => {
   const { data, error } = await supabase.from('leads').select('*').order('created_at', { ascending: false }).limit(1000);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// ── HEALTH ──
 // ════════════════════════════════════════════════
-// TARGETS — Admin sets per RM per period
+// TARGETS
 // ════════════════════════════════════════════════
-
-// GET all targets (admin sees all, RM sees own)
 app.get('/api/targets', auth, async (req, res) => {
   const { period } = req.query;
   let q = supabase.from('rm_targets').select('*').order('rm_key');
@@ -569,18 +556,13 @@ app.get('/api/targets', auth, async (req, res) => {
   res.json(data || []);
 });
 
-// GET targets + actuals for a specific period (combines target with live Excel data)
 app.get('/api/targets/progress', auth, async (req, res) => {
   const { period, rm_key } = req.query;
   const targetRM = (req.user.role !== 'admin') ? req.user.rm_key : (rm_key || null);
-
-  // Get targets
   let tq = supabase.from('rm_targets').select('*');
   if (targetRM) tq = tq.eq('rm_key', targetRM);
   if (period) tq = tq.eq('period', period);
   const { data: targets } = await tq;
-
-  // Get actuals from clients table (latest Excel data)
   let aq = supabase.from('clients').select(
     'rm_key,net_sales_fy,gross_sales_fy,net_sales_cy,sip_amount,sip_gross_fy,sip_net_fy,nfo_fy,fd_sales,pms_sales,tax_sales_fy,aum_total'
   );
@@ -593,8 +575,6 @@ app.get('/api/targets/progress', auth, async (req, res) => {
     if (data.length < 1000) break;
     fr += 1000;
   }
-
-  // Aggregate actuals by RM
   const actuals = {};
   clients.forEach(c => {
     if (!c.rm_key) return;
@@ -604,41 +584,29 @@ app.get('/api/targets/progress', auth, async (req, res) => {
       nfo_fy: 0, fd_sales: 0, pms_sales: 0, tax_sales_fy: 0, aum_total: 0
     };
     const a = actuals[c.rm_key];
-    a.net_sales_fy += c.net_sales_fy || 0;
-    a.gross_sales_fy += c.gross_sales_fy || 0;
-    a.net_sales_cy += c.net_sales_cy || 0;
-    a.sip_amount += c.sip_amount || 0;
-    a.sip_gross_fy += c.sip_gross_fy || 0;
-    a.sip_net_fy += c.sip_net_fy || 0;
-    a.nfo_fy += c.nfo_fy || 0;
-    a.fd_sales += c.fd_sales || 0;
-    a.pms_sales += c.pms_sales || 0;
-    a.tax_sales_fy += c.tax_sales_fy || 0;
+    a.net_sales_fy += c.net_sales_fy || 0; a.gross_sales_fy += c.gross_sales_fy || 0;
+    a.net_sales_cy += c.net_sales_cy || 0; a.sip_amount += c.sip_amount || 0;
+    a.sip_gross_fy += c.sip_gross_fy || 0; a.sip_net_fy += c.sip_net_fy || 0;
+    a.nfo_fy += c.nfo_fy || 0; a.fd_sales += c.fd_sales || 0;
+    a.pms_sales += c.pms_sales || 0; a.tax_sales_fy += c.tax_sales_fy || 0;
     a.aum_total += c.aum_total || 0;
   });
-
-  // Also get CRM actuals (reviews, meetings, leads)
   const [{ data: allRevs }, { data: allMeets }, { data: allLeads }] = await Promise.all([
     supabase.from('reviews').select('rm_key,created_at'),
     supabase.from('meetings').select('rm_key,created_at'),
     supabase.from('leads').select('rm_key,stage,created_at'),
   ]);
-
   const crmActuals = {};
   (allRevs || []).forEach(r => { if (!crmActuals[r.rm_key]) crmActuals[r.rm_key] = { reviews: 0, meetings: 0, leads: 0 }; crmActuals[r.rm_key].reviews++; });
   (allMeets || []).forEach(m => { if (!crmActuals[m.rm_key]) crmActuals[m.rm_key] = { reviews: 0, meetings: 0, leads: 0 }; crmActuals[m.rm_key].meetings++; });
   (allLeads || []).forEach(l => { if (!crmActuals[l.rm_key]) crmActuals[l.rm_key] = { reviews: 0, meetings: 0, leads: 0 }; crmActuals[l.rm_key].leads++; });
-
-  // Merge targets with actuals
   const result = (targets || []).map(t => ({
     ...t,
     actuals: { ...(actuals[t.rm_key] || {}), ...(crmActuals[t.rm_key] || {}) }
   }));
-
   res.json(result);
 });
 
-// UPSERT target for a specific RM + period (admin only)
 app.post('/api/targets', auth, adminOnly, async (req, res) => {
   const { rm_key, period, period_type, ...rest } = req.body;
   if (!rm_key || !period) return res.status(400).json({ error: 'rm_key and period required' });
@@ -655,14 +623,12 @@ app.delete('/api/targets/:id', auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET all unique RM keys from clients (for target setting UI)
 app.get('/api/admin/rm-list', auth, adminOnly, async (req, res) => {
   const { data } = await supabase.from('clients').select('rm_key').limit(5000);
   const unique = [...new Set((data || []).map(c => c.rm_key).filter(Boolean))].sort();
   res.json(unique);
 });
 
-// Folios by scheme (for drill-down)
 app.get('/api/folios/by-scheme', auth, async (req, res) => {
   const { scheme } = req.query;
   if (!scheme) return res.status(400).json({ error: 'scheme required' });
@@ -674,7 +640,6 @@ app.get('/api/folios/by-scheme', auth, async (req, res) => {
   res.json(data || []);
 });
 
-// Folios by client (for client profile)
 app.get('/api/folios/by-client', auth, async (req, res) => {
   const { client_id } = req.query;
   if (!client_id) return res.status(400).json({ error: 'client_id required' });
@@ -685,10 +650,8 @@ app.get('/api/folios/by-client', auth, async (req, res) => {
   res.json(data || []);
 });
 
-// Token verify endpoint
-app.get('/api/verify', auth, (req, res) => {
-  res.json({ ok: true, user: req.user });
-});
+app.get('/api/verify', auth, (req, res) => res.json({ ok: true, user: req.user }));
 
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString(), version: '2.1' }));
+
 app.listen(PORT, () => console.log(`Uppercrust CRM v2.1 on port ${PORT}`));
